@@ -1,0 +1,173 @@
+26. PWM
+1. MPC5604P 有四个PWM子模块， 每个有三个输出PWMA、PWMB和PWMX
+2. 每个模块有以下寄存器: CNT(Counter Register),INIT(Initial Count Register), CTRL2(Control 2 Register), CTRL1(Control 1 Register), VAL0~5(Value Register 0~5), OCTRL(输出控制寄存器)， STS（状态寄存器）， INTEN（中断使能寄存器）， DMAEN（DMA使能寄存器）， TCTRL（Output Trigger控制寄存器），DISMAP（Fault Disable Mapping Register）， DTCNT0（Deadtime计数寄存器 0）， DTCNT1(Deadtime Count Register 1), CAPTCTRLX(捕获控制寄存器X)， CAPTCOMPX（捕获比较寄存器）， CVAL0~1（Capture Value 0~1寄存器）， CVAL0~1C（Capture Value 0~1 Cycle寄存器）
+3. 四个模块共用以下寄存器OUTEN(输出使能寄存器)， MASK（输出mask寄存器）， SWOUT（软件控制输出寄存器）， DTSRCSEL（Deadtime Source Select Register）， MCTRL（Master Control寄存器）， FCTRL（故障控制寄存器）， FSTS（故障状态寄存器）， FFILT（故障过滤寄存器）
+4. 每个模块的CNT计数器从INIT增加到VAL1，等于VAL0/1时触发half/full cycle reload事件(该事件具体做什么需要CTRL1/2配置)， 等于VAL2/3时PWMA输出上升/下降沿，等于VAL4/5时PWMB输出上升/下降沿； 
+5. PWM模块使用时钟源为MC_PLL_CLK, 该时钟源通过AUX Clock Selector 0选择FMPLL_0（64MHZ）为时钟源，同时2分频，因此MC_PLL_CLK的时钟频率为32MHZ, 经过CTRL1模块的PRSC选择8分频，因此PWM时钟为4MHZ，满量程计数器VAL1取值为0x6800时，输出的PWM频率为150.24HZ
+6. PWM寄存器中的PWMA/B输入和PWMA/B输出有区别，输出有可能不同于输入，比如通过DTSRCSEL可以选择是否对输入取反之后输出，或者无视输入，直接输出SWCOUT里的设置值
+7. SAVIC EIS中通过CTRL1.FULL设置每次CNT==VAL1时为一次reload opportunity, CTRL1.LDFQ默认值为0设置每次reload opportunity都会触发一次reload, CTRL2.RELOAD_SEL设为0控制LDOK/reload都被视为一次local reload.
+8. 每次CNT==VAL1都会触发Local Sync， CTRL2.INIT_SEL默认值00选择Local Sync触发CNT被更新为INIT值（就是重置0）,由于VAL2为0，VAL3为0x3400,因此每次CNT重置之后PWMA输入为高电平，CNT==VAL3PWMA输入反向，实现duty cycle的控制
+9. OCTRL.POLA对PWMA的输入取反，这是由于电路设计中加了反相器决定的
+10. DISMAP.DISA置1表示故障时输出被关闭，此时输出由OCTRL.PWMAFS控制
+11. CTRL2.FORCE_SEL置默认值0表示CTRL2.FORCE可以生成FORCE_OUT, 通过改变DTSRCSEL.SELA的值选择PWMA输出（PWMA输入，或者反向的PWMA输入，或者SWCOUT.OUTA），通过这样的方法可以打开或关闭PWM输出
+
+* 故障保护
+1. 每个PWM子模块有一个独立的故障引脚（Faultx），一旦该引脚置位（高使能还是低使能可由FLVL配置），相应PWM输出可以被关闭（被强制置高、低或高阻，由PWMxFS位控制），具体关闭三个输出中的哪个或哪些可以通过DISMAP寄存器配置
+2. 故障引脚过滤器，FFILT寄存器可以设置故障引脚的采样频率（FILT_PER），采样值必须连续相同FILT_CNT次。设置FILT_PER为0则关闭故障过滤器，若故障输入有效，FFPINx和FFLAGx会被置位，故障输入只要有效（表示有故障），FFPIN就会一直置位，FFLAG需要由软件向相应为写入1来清零。
+3. 当FAUTO被设置为1时，故障引脚只要输入无效，PWM输出就自动恢复；故障引脚有效，PWM输出就被禁止。
+4. 当FAUTO被设置为0时，若FSAFE被设置为零，只要FFLAG被清零，就恢复PWM输出； 若FSAFE被设置为1，FFLAG和FFPIN必须都被清零才恢复PWM输出。
+
+
+* CNT寄存器
+* Bits:       0~15 
+* Meaning:  |  CNT  |
+* 默认值:       全零
+* 只读，计数器值
+
+
+* INIT寄存器
+* Bits:        0~15 
+* Meaning:  |  INIT  |
+* 默认值:       全零
+* 只读，计数器初始值，当local/master sync，或者master reload使能时，或者FORCE使能时，该寄存器的值被装入CNT寄存器
+
+
+* CTRL2 寄存器
+* Bits:         0        1       2         3           4           5          6~7       8       9       10~12        13         14~15 
+* Meaning:  | DBGEN | WAITEN | INDEP | PWMA_INIT | PWMB_INIT | PWMX_INIT | INIT_SEL | FRCEN | FORCE | FORCE_SEL | RELOAD_SEL | CLK_SEL |
+* 默认值 :       全零
+* DBGEN : Debug使能
+* WAITEN ： 等待使能，该位置1时，PWM在WAIT/HALT模式下仍然运行
+* INDEP ： 置0时PWMA和PWMB位互为补码的PWM对， 置1时PWMA和PWMB输出互相独立
+* PWMA_INIT ： 当FORCE_INIT被置位时PWMA的初始值 （0/1）
+* PWMB_INIT ： 当FORCE_INIT被置位时PWMB的初始值 （0/1）
+* PWMX_INIT ： 当FORCE_INIT被置位时PWMX的初始值 （0/1）
+* INIT_SEL ： 初始控制选择，该两位用于设置何时触发INIT寄存器的值被装入CNT寄存器，00/01/10/11表示Local sync/Master reload/Master sync/EXT_SYNC触发
+* FRCEN ： 该位使能FORCE_OUT信号用于触发INIT寄存器值被装入CNT寄存器事件，而无视INIT_SEL的设置，0表示禁止，1表示使能
+* FORCE ： 当FORCE_SEL设为000时，该位写1则会触发FORCE_OUT事件，这会导致： PWMA/PWMB输出引脚被设置为SELA/SELB位的值； 若FRCEN被置位，INIT寄存器的值会被装入CNT寄存器
+* FORCE_SEL ： FORCE_OUTPUT信号源选择，000表示local force信号（即上一位），001表示master force（from submodule 0）,010/011表示local/master reload，100/101表示local/master sync,110表示EXT_FORCE信号， 111 reserve
+* RELOAD_SEL ： 控制reload信号源，置1时使用Master Reload信号（from submodule 0）作为信号源，置0时使用local Reload作为reload信号源
+* CLK_SEL ： 选择时钟源， 00/01/10表示IPBus时钟/EXT_CLK/submodule 0时钟被用于时钟源
+
+
+* CTRL1 寄存器
+* Bits :       0~3     4      5    6~7    8   9~11   12~14    15
+* Meaning : | LDFQ | HALF | FULL |  DT  | 0 | PRSC |  000  | DBLEN |
+* 默认值 :     0000     0     1      00    0    000     000     0
+* LDFQ : Load频率，控制多少次PWM opportunity触发一次reload事件（该事件是否作为触发源由CTRL2寄存器的FORCE_SEL控制），每次CNT和VAL0相等或者和VAL1相等时，被视作一次PWM opportunity，0000代表每次
+* HALF : CNT==VAL0触发一次half cycle， 0表示禁止， 1表示使能
+* FULL : CNT==VAL1触发一次full cycle， 0表示禁止， 1表示使能
+* DT : Deadtime， 每次deadtime时PWMX输入采样值
+* PRSC : 时钟分频系数
+* DBLEN : double switching PWM使能（没搞清楚什么意思）
+
+
+* VAL0~5寄存器
+* Bits:       0~15 
+* Meaning:  |  CNT  |
+* 默认值:       全零
+* 只读，计数器值
+
+
+* OCTRL 输出控制寄存器
+* Bits :         0         1         2      3~4      5       6       7     8~9     10~11   12~13    14~15
+* Meaning : | PWMA_IN | PWMA_IN | PWMA_IN |  00  | POL A | POL B | POL X |  00  | PWMAFS | PWMBFS | PWMXFS |
+* 默认值 :     全0
+* PWMA/B/X_IN : 只读，PWMA/B/C 输入值
+* POLA/B/X ： 0表示PWMA/B/C不反向（高电平有效）， 1表示反向（低电平有效）
+* PWMA/B/XFS ：故障或STOP模式时PWMA/B/X输出， 00表示逻辑0， 01表示逻辑1， 1x表示高阻态
+
+
+* STS 状态寄存器
+* Bits :      0    1     2     3      4~7     8       9      10~15
+* Meaning : | 0 | RUF | REF |  RF  | 0000 | CFX 1 | CFX 0 |  CMPF  |
+* 默认值 :     全0
+* RUF : 只读，表示当前INIT/VALx/PRSC寄存器有数据更改，但是没有更新（没有装载并开始使用新数据），0表示没有更新，1表示有更新
+* REF ： Reload错误，0表示无错误，1表示有错误
+* RF ： Reload标志，0 表示无reload， 1表示有reload
+* CFX1 ： CX1CNT的值大于CFXWM的值时该位置位
+* CFX0 ： CX0CNT的值大于CFXWM的值时该位置位
+* CMPF ： 比较标志， CNT寄存器和VAL0~5寄存器的值相同时置1
+
+
+* INTEN 中断使能寄存器
+* Bits :      0~1     2      3    4~7      8       9      10~15
+* Meaning : |  00  | REIE | RIE | 0000 | CX1IE | CX0IE |  CMPIE  |
+* 默认值 :     全0
+* REIE : REF 中断使能，0禁止，1使能
+* RIE :  RF 中断使能，0禁止，1使能
+* CX1IE : CFX1 错误中断使能，0禁止，1使能
+* CX0IE : CFX0 错误中断使能，0禁止，1使能
+* CMPIE : CMPF 错误中断使能，0禁止，1使能
+
+
+* DISMAP 寄存器
+* Bits:         0~3         4~7       8~11        12~15 
+* Meaning: | NOT USED | DISX[3:0] | DISB[3:0] | DISA[3:0] |
+* 默认值:       1111        1111        1111       1111
+* 置1表示相应channel的Fault Pin使能后该输出被关闭
+	
+	
+* OUTEN 输出使能寄存器
+* Bits:         0~3         4~7       8~11        12~15 
+* Meaning: | NOT USED | PWMA_EN[3:0] | PWMB_EN[3:0] | PWMX_EN[3:0] |
+* 默认值:        全0
+* PWMA/B/X_EN : 模块使能控制，0禁止，1使能
+
+
+* SWCOUT 软件控制输出寄存器
+* Bits:         0~7        8       9        10       11      12        13       14       15
+* Meaning: | NOT USED | OUTA_3 | OUTB_3 | OUTA_2 | OUTB_2 | OUTA_1 | OUTB_1 | OUTA_0 | OUTB_0 |
+* 默认值:        全0
+* OUTA/B_0/1/2/3 : 模块输出值，具体输出由DTSRCSEL控制，0表示输出逻辑0， 1表示输出逻辑1
+
+
+* DTSRCSEL Deadtime源选择寄存器
+* Bits:        0~3        4~7       8~11       12~15
+* Meaning: | SELA/B_3 | SELA/B_2 | SELA/B_1 | SELA/B_0 |
+* 默认值:        全0
+* SELA/B_0/1/2/3 : 00表示输出PWM信号，01表示输出PWM反向信号，10表示输出SWCOUT寄存器设置的输出信号
+
+
+* MCTRL 主控制寄存器
+* Bits:       0~3     4~7    8~11    12~15
+* Meaning: |  IPOL  | RUN | CLDOK |  LDOK  |
+* 默认值:        全0
+* IPOL : 当CTRL2的INDEP位被置1时，PWMA和PWMB输出互反，此时IPOL位用于控制输出由PWMA输入控制还是由PWMB输入控制，0表示输出为PWMA（PWMB输出为PWMA输出的反向，PWMB输入被忽略），1反之
+* RUN :  时钟使能，0表示子模块CNT被重置，1表示PWM使能
+* CLDOK : 用于写1清零LDOK
+* LDOK :  向PRSC/INIT/VALx寄存器更新数据
+	
+	
+* MASK 掩码寄存器
+* Bits:         0~3         4~7       8~11        12~15 
+* Meaning: | NOT USED | MASKA[3:0] | MASKB[3:0] | MASKX[3:0] |
+* 默认值:        全0
+* MASKA/B/X : 该位置1则输出为0，0正常输出，1掩码使能
+	
+	
+* FCTRL 寄存器
+* Bits:      0~3     4~7     8~11   12~15 
+* Meaning: | FLVL | FAUTO | FSAFE |  FIE  |
+* 默认值:       全0
+* FLVL： 0/1表示FAULT Pin上逻辑0/1使能故障
+* FAUTO： 自动故障清空，0表示手动清空，即FFLAG必须先清零，之后根据FSAFE设置绝对是否恢复PWM输出； 1表示自动故障清零，即只要FFPINx被清空即恢复PWM输出，不管FFLAG设置
+* FSAFE： 故障安全模式，0表示普通模式，即只要FFLAG被清零，就恢复PWM输出（同时PWM故障引脚必须无效，表示无故障，否则PWM输出仍然关闭）； 1表示安全模式，即FFLAG和FFPIN必须都被清零才打开PWM输出。
+* FIE： 故障中断，0表示PWM故障中断不使能，1表示使能
+
+
+* FSTS 寄存器
+* Bits:         0~2       3      4~7       8~11      12~15
+* Meaning: | NOT USED | FTEST | FFPIN |  NOT USED  | FFLAG |
+* 默认值:       000        0      1111      0000       1111
+* FTEST： 用于模拟故障，置1时所有PWM模块的故障引脚都使能
+* FFPIN： 只读， 置1时表示经过过滤后的FAULTx引脚故障使能
+* FFLAG： 0表示FAULTx引脚不使能（无故障）， 1表示该引脚使能（有故障），写1清零
+
+
+* FFILT 寄存器
+* Bits:         0~4       5~7         8~15
+* Meaning: | NOT USED | FILT_CNT | FILT_PER | 
+* 默认值:        全0 
+* FILT_CNT： 故障过滤技术器，表示FAULTx引脚必须连续采样相同的次数，0表示3次，7表示10次，否则输入值不采信
+* FILT_PER： 表示采样周期，为0表示过滤器被关闭
