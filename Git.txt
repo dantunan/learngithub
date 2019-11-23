@@ -112,6 +112,3 @@ Git分支十分强大，在团队开发中应该充分应用。
     命令git push origin --delete dev 可以用来删除远程dev分支
     命令git branch --track dev2 origin/dev 可以用来建立新的本地dev2分支，并将该分支和远程origin/dev分支联系起来
     命令git branch --set-upstream-to=origin/dev dev3 可以将已经建立的本地分支dev3和远程分支origin/dev联系起来
-
-
-adding this line to show difference
